@@ -1,0 +1,46 @@
+# Sample Nginx reverse-proxy configuration for the FastAPI backend.
+#
+# Install:
+#   sudo cp docs/deployment/nginx.conf.sample /etc/nginx/sites-available/fastapi-backend
+#   sudo ln -s /etc/nginx/sites-available/fastapi-backend /etc/nginx/sites-enabled/
+#   sudo nginx -t && sudo systemctl reload nginx
+#
+# For TLS, terminate HTTPS here (e.g. via Certbot/Let's Encrypt) and redirect
+# HTTP -> HTTPS. This sample shows the plain HTTP proxy for brevity.
+
+upstream fastapi_backend {
+    server 127.0.0.1:8000 fail_timeout=0;
+    keepalive 32;
+}
+
+server {
+    listen 80;
+    server_name api.example.com;
+
+    # Maximum upload size (tune per your needs).
+    client_max_body_size 25m;
+
+    # Propagate a request id to the backend (echoed back in responses).
+    location / {
+        proxy_pass http://fastapi_backend;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Request-ID      $request_id;
+        proxy_set_header Connection        "";
+
+        proxy_redirect off;
+        proxy_buffering off;
+        proxy_read_timeout 60s;
+        proxy_send_timeout 60s;
+    }
+
+    # Health probe without polluting access logs.
+    location = /health {
+        proxy_pass http://fastapi_backend/health;
+        access_log off;
+    }
+}
