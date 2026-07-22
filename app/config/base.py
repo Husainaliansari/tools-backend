@@ -211,6 +211,43 @@ class BaseAppSettings(BaseSettings):
     UPLOAD_RATE_LIMIT_PER_MINUTE: int = 30
 
     # --------------------------------------------------------------------- #
+    # Feedback & suggestions form
+    # --------------------------------------------------------------------- #
+    # Per-IP submissions allowed per minute (Redis fixed window, fail-open).
+    FEEDBACK_RATE_LIMIT_PER_MINUTE: int = 5
+    # A visitor (by email and by IP) may submit at most this many times in a
+    # rolling 24-hour window. Set <= 0 to disable the daily limit.
+    FEEDBACK_MAX_PER_DAY: int = 1
+    # Attachment (screenshot) constraints. Images only, small by design.
+    FEEDBACK_ATTACHMENT_MAX_BYTES: int = 1 * 1024 * 1024  # 1 MB
+    FEEDBACK_ATTACHMENT_ALLOWED_TYPES: list[str] = Field(
+        default_factory=lambda: [
+            "image/jpeg",
+            "image/png",
+            "image/webp",
+        ]
+    )
+    # Minutes a captcha challenge token stays valid after it is issued.
+    FEEDBACK_CAPTCHA_TTL_MINUTES: int = 15
+
+    # --------------------------------------------------------------------- #
+    # Outbound email (SMTP). Unconfigured (no host) => sends are logged and
+    # skipped, never raised — the feature degrades gracefully in local dev,
+    # mirroring the password-reset no-op.
+    # --------------------------------------------------------------------- #
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_USE_TLS: bool = True
+    SMTP_TIMEOUT_SECONDS: int = 15
+    # Envelope/from address for outbound mail.
+    EMAIL_FROM: str = "no-reply@pdfly.com"
+    EMAIL_FROM_NAME: str = "PDFly"
+    # Recipients notified when new feedback arrives (comma-separated in env).
+    FEEDBACK_ADMIN_EMAILS: list[str] = Field(default_factory=list)
+
+    # --------------------------------------------------------------------- #
     # Logging
     # --------------------------------------------------------------------- #
     LOG_LEVEL: str = "INFO"
@@ -224,7 +261,13 @@ class BaseAppSettings(BaseSettings):
     # --------------------------------------------------------------------- #
     # Validators
     # --------------------------------------------------------------------- #
-    @field_validator("CORS_ORIGINS", "ALLOWED_HOSTS", mode="before")
+    @field_validator(
+        "CORS_ORIGINS",
+        "ALLOWED_HOSTS",
+        "FEEDBACK_ADMIN_EMAILS",
+        "FEEDBACK_ATTACHMENT_ALLOWED_TYPES",
+        mode="before",
+    )
     @classmethod
     def _split_csv(cls, value: object) -> object:
         """Allow comma-separated strings from the environment.

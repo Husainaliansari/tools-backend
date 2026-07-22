@@ -7,6 +7,7 @@ request/response models are added in their own modules and inherit from
 """
 
 from app.schemas.base import BaseSchema, ORMSchema
+from app.schemas.feedback import CaptchaChallenge, FeedbackOut
 from app.schemas.file import FileInfo, UploadResult
 from app.schemas.job import JobCreateRequest, JobError, JobInfo
 from app.schemas.response import (
@@ -18,9 +19,11 @@ from app.schemas.response import (
 
 __all__ = [
     "BaseSchema",
+    "CaptchaChallenge",
     "ErrorDetail",
     "ErrorInfo",
     "ErrorResponse",
+    "FeedbackOut",
     "FileInfo",
     "JobCreateRequest",
     "JobError",

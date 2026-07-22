@@ -39,6 +39,21 @@ class ErrorCode(StrEnum):
     PROCESSING_FAILED = "PROCESSING_FAILED"
     PROCESSING_TIMEOUT = "PROCESSING_TIMEOUT"
 
+    # Feedback
+    FEEDBACK_DAILY_LIMIT = "FEEDBACK_DAILY_LIMIT"
+    CAPTCHA_INVALID = "CAPTCHA_INVALID"
+
+
+class FeedbackCategory(StrEnum):
+    """Kind of feedback a visitor is submitting (mirrors the frontend dropdown)."""
+
+    GENERAL = "general"
+    BUG = "bug"
+    FEATURE = "feature"
+    UI_UX = "ui_ux"
+    PERFORMANCE = "performance"
+    OTHER = "other"
+
 
 class FileStatus(StrEnum):
     """Lifecycle of a stored file (upload or processed output)."""
@@ -120,6 +135,7 @@ class ToolSlug(StrEnum):
 
 __all__ = [
     "ErrorCode",
+    "FeedbackCategory",
     "FileCategory",
     "FileStatus",
     "JobFileRole",

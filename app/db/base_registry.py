@@ -12,8 +12,9 @@ import them here, e.g.::
 from __future__ import annotations
 
 from app.db.base import Base
+from app.models.feedback import Feedback
 from app.models.file import StoredFile
 from app.models.job import JobFile, ProcessingJob
 from app.models.user import User
 
-__all__ = ["Base", "JobFile", "ProcessingJob", "StoredFile", "User"]
+__all__ = ["Base", "Feedback", "JobFile", "ProcessingJob", "StoredFile", "User"]

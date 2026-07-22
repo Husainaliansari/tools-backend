@@ -7,7 +7,8 @@ in ``app/db/base_registry.py`` so Alembic can autogenerate migrations for them.
 
 from __future__ import annotations
 
+from app.models.feedback import Feedback
 from app.models.file import StoredFile
 from app.models.job import JobFile, ProcessingJob
 
-__all__ = ["JobFile", "ProcessingJob", "StoredFile"]
+__all__ = ["Feedback", "JobFile", "ProcessingJob", "StoredFile"]

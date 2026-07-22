@@ -50,3 +50,36 @@ async def upload_rate_limit(request: Request) -> None:
     if count > limit:
         logger.info("upload_rate_limited", client=client_ip, count=count)
         raise RateLimitedError()
+
+
+async def _fixed_window_limit(request: Request, *, bucket: str, limit: int) -> None:
+    """Shared per-IP-per-minute fixed-window limiter (fail-open)."""
+    if limit <= 0:  # disabled
+        return
+
+    client_ip = request.client.host if request.client else "unknown"
+    window = int(time.time() // 60)
+    key = f"ratelimit:{bucket}:{client_ip}:{window}"
+
+    try:
+        redis = get_redis()
+        count = await redis.incr(key)
+        if count == 1:
+            await redis.expire(key, 90)
+    except Exception:
+        logger.warning("rate_limit_backend_unavailable", client=client_ip)
+        return  # fail-open
+
+    if count > limit:
+        logger.info("rate_limited", bucket=bucket, client=client_ip, count=count)
+        raise RateLimitedError("Too many requests. Please wait a minute and try again.")
+
+
+async def feedback_rate_limit(request: Request) -> None:
+    """FastAPI dependency enforcing the per-IP feedback submission rate limit."""
+    settings = get_settings()
+    await _fixed_window_limit(
+        request,
+        bucket="feedback",
+        limit=settings.FEEDBACK_RATE_LIMIT_PER_MINUTE,
+    )

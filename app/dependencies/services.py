@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.services.download import DownloadService
+from app.services.feedback import FeedbackService
 from app.services.jobs import JobService
 from app.services.upload import UploadService
 
@@ -37,6 +38,13 @@ def get_job_service(
     return JobService(session)
 
 
+def get_feedback_service(
+    session: Annotated[AsyncSession, Depends(get_db)],
+) -> FeedbackService:
+    return FeedbackService(session)
+
+
 UploadServiceDep = Annotated[UploadService, Depends(get_upload_service)]
 DownloadServiceDep = Annotated[DownloadService, Depends(get_download_service)]
 JobServiceDep = Annotated[JobService, Depends(get_job_service)]
+FeedbackServiceDep = Annotated[FeedbackService, Depends(get_feedback_service)]
