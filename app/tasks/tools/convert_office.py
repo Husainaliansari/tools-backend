@@ -29,13 +29,14 @@ def _office_to_pdf(ctx: ToolRunContext, export_filter: str) -> list[ProducedFile
     filter_options = {"SelectPdfVersion": 2} if ctx.options.get("pdf_a") else None
 
     def operate(path, name, index):
-        output = libreoffice_convert(
-            path,
-            ctx.workspace,
-            filter_name=export_filter if filter_options else None,
-            filter_options=filter_options,
-            display_name=name,
-        )
+        with ctx.perf.phase("libreoffice_convert"):
+            output = libreoffice_convert(
+                path,
+                ctx.workspace,
+                filter_name=export_filter if filter_options else None,
+                filter_options=filter_options,
+                display_name=name,
+            )
         return ProducedFile(output, f"{file_stem(name)}.pdf")
 
     # Documents convert independently — one per available conversion slot.

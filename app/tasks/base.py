@@ -50,6 +50,7 @@ from app.services.job_events import publish_job_event
 from app.services.storage import get_storage
 from app.services.temp_files import temp_workspace
 from app.utils.command import CommandError
+from app.utils.perf import NULL_TIMER, PerfTimer
 from app.utils.filenames import file_extension, sanitize_filename
 from app.utils.hashing import sha256_file
 
@@ -82,6 +83,10 @@ class ToolRunContext:
     workspace: Path
     #: Call with 0-100 to surface progress through the status API.
     report_progress: Callable[[int], None] = field(default=lambda _p: None)
+    #: Per-job phase timer. Processors call ``ctx.perf.phase("name")`` to
+    #: record conversion sub-phases; the runner logs the aggregate as
+    #: ``job_perf``. Defaults to a no-op timer.
+    perf: PerfTimer = field(default_factory=lambda: NULL_TIMER)
 
 
 Processor = Callable[[ToolRunContext], list[ProducedFile]]
@@ -208,12 +213,15 @@ def run_tool_job(
             (link for link in job.files if link.role == JobFileRole.INPUT),
             key=lambda link: link.position,
         )
+        perf = PerfTimer()
         try:
-            input_paths = [
-                storage.resolve(link.file.category, link.file.relative_path)
-                for link in input_links
-            ]
-            missing = [p for p in input_paths if not p.is_file()]
+            with perf.phase("load_inputs"):
+                input_paths = [
+                    storage.resolve(link.file.category, link.file.relative_path)
+                    for link in input_links
+                ]
+                missing = [p for p in input_paths if not p.is_file()]
+                input_bytes = sum(p.stat().st_size for p in input_paths if p.is_file())
             if missing:
                 raise ProcessingError(
                     "One or more input files are no longer available.",
@@ -233,15 +241,26 @@ def run_tool_job(
                     options=dict(job.options or {}),
                     workspace=workspace,
                     report_progress=report_progress,
+                    perf=perf,
                 )
-                produced = processor(context)
+                with perf.phase("convert"):
+                    produced = processor(context)
                 if not produced:
                     raise ProcessingError("The tool produced no output.")
-                _register_outputs(session, job, produced, settings=settings)
+                with perf.phase("export_outputs"):
+                    _register_outputs(session, job, produced, settings=settings)
 
             repo.mark_completed(job)
             session.commit()
-            logger.info("job_completed", job_id=job_id, tool=job.tool)
+            logger.info(
+                "job_completed",
+                job_id=job_id,
+                tool=job.tool,
+                input_files=len(input_paths),
+                input_bytes=input_bytes,
+                output_files=len(produced),
+                **perf.summary(),
+            )
 
         except ProcessingError as exc:
             repo.mark_failed(job, error_code=exc.error_code, error_message=exc.message)

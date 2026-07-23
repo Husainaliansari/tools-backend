@@ -99,6 +99,46 @@ class JobFileRole(StrEnum):
     OUTPUT = "output"
 
 
+class UserStatus(StrEnum):
+    """Account lifecycle state (admin-managed)."""
+
+    ACTIVE = "active"
+    SUSPENDED = "suspended"
+    INACTIVE = "inactive"
+
+
+class AdminLogCategory(StrEnum):
+    """Classifies an admin audit-log entry (drives the two log views)."""
+
+    AUDIT = "audit"
+    SECURITY = "security"
+
+
+class ContentStatus(StrEnum):
+    """Publication state of CMS content (pages, blog posts, announcements)."""
+
+    DRAFT = "draft"
+    PUBLISHED = "published"
+    ARCHIVED = "archived"
+
+
+class SubscriptionStatus(StrEnum):
+    """Lifecycle of a subscriber's plan."""
+
+    ACTIVE = "active"
+    EXPIRED = "expired"
+    CANCELLED = "cancelled"
+    TRIALING = "trialing"
+
+
+class ErrorLogLevel(StrEnum):
+    """Severity of a captured application log entry."""
+
+    ERROR = "error"
+    WARNING = "warning"
+    INFO = "info"
+
+
 class ToolSlug(StrEnum):
     """Canonical identifiers for the PDF tools (mirrors the frontend slugs)."""
 
@@ -134,11 +174,16 @@ class ToolSlug(StrEnum):
 
 
 __all__ = [
+    "AdminLogCategory",
+    "ContentStatus",
     "ErrorCode",
+    "ErrorLogLevel",
     "FeedbackCategory",
     "FileCategory",
     "FileStatus",
     "JobFileRole",
     "JobStatus",
+    "SubscriptionStatus",
     "ToolSlug",
+    "UserStatus",
 ]

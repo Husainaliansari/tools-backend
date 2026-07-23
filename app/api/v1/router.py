@@ -10,6 +10,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.api.v1.endpoints import feedback, files, jobs
+from app.api.v1.endpoints.admin import router as admin_router
 from app.api.v1.endpoints.tools import (
     compare,
     compress,
@@ -46,6 +47,7 @@ api_v1_router = APIRouter()
 api_v1_router.include_router(files.router)
 api_v1_router.include_router(jobs.router)
 api_v1_router.include_router(feedback.router)
+api_v1_router.include_router(admin_router)
 
 # Tool endpoints (one per implemented tool).
 for _tool_module in (

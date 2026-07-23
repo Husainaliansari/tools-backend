@@ -30,6 +30,12 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # Guarantee the local storage tree exists before any request needs it.
     get_storage().ensure_structure()
 
+    # Ensure the admin panel's baseline data (admin account, tool configs,
+    # default settings) exists. Idempotent and best-effort.
+    from app.services.admin_bootstrap import bootstrap_admin
+
+    await bootstrap_admin()
+
     # Eager-Celery deployments run conversions inside this process, so the
     # LibreOffice warm-up belongs here (workers do it via worker_ready).
     if settings.CELERY_TASK_ALWAYS_EAGER:

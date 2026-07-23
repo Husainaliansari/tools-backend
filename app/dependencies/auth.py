@@ -16,6 +16,7 @@ from typing import Annotated
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.constants import UserStatus
 from app.core.security import decode_token
 from app.db import get_db
 from app.exceptions.base import UnauthorizedError
@@ -44,6 +45,11 @@ async def get_optional_user(
     user = await UserRepository(session).get(uuid.UUID(payload["sub"]))
     if user is None:
         raise UnauthorizedError("Account no longer exists.")
+    # A suspension is enforced on every request, not only at login — an admin
+    # suspending an account revokes its live sessions immediately rather than
+    # letting an already-issued access token keep working until it expires.
+    if user.status == UserStatus.SUSPENDED:
+        raise UnauthorizedError("This account has been suspended.")
     return user
 
 

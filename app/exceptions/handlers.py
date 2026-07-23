@@ -79,10 +79,17 @@ async def http_exception_handler(
 
 
 async def unhandled_exception_handler(
-    _request: Request, exc: Exception
+    request: Request, exc: Exception
 ) -> JSONResponse:
     """Catch-all for unexpected errors. Never leak internals to clients."""
     logger.exception("unhandled_exception", exc_info=exc)
+    # Best-effort persist to the admin Error Logs view (never raises).
+    try:
+        from app.services.error_capture import capture_exception
+
+        await capture_exception(exc, path=request.url.path)
+    except Exception:  # pragma: no cover - defensive
+        pass
     return _render(
         status.HTTP_500_INTERNAL_SERVER_ERROR,
         ErrorInfo(

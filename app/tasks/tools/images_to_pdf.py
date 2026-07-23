@@ -17,6 +17,7 @@ def _combine(ctx: ToolRunContext) -> list[ProducedFile]:
         page_size=options.get("page_size", "fit"),
         orientation=options.get("orientation", "portrait"),
         margin_mm=options.get("margin_mm", 10.0),
+        perf=ctx.perf,
     )
     ctx.report_progress(90)
     # A single image keeps its own name; albums get a generic one.

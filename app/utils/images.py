@@ -11,6 +11,8 @@ normalised with Pillow first:
 from __future__ import annotations
 
 import io
+import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Literal
 
@@ -19,6 +21,7 @@ from PIL import Image
 
 from app.exceptions.jobs import ProcessingError
 from app.logging import get_logger
+from app.utils.perf import NULL_TIMER, PerfTimer
 
 logger = get_logger(__name__)
 
@@ -51,6 +54,22 @@ def _normalise(path: Path) -> bytes:
         return buffer.getvalue()
 
 
+def _normalise_all(image_paths: list[Path]) -> list[bytes]:
+    """Normalise every image, in order, spreading the work across threads.
+
+    :func:`_normalise` is I/O- plus (for alpha/exotic images) Pillow-bound;
+    Pillow releases the GIL around its C codecs, so a thread pool cuts the
+    preprocessing wall time of a multi-image album to roughly the slowest
+    image. Single images skip the pool entirely. Order is preserved
+    (``pool.map``), which the output page order depends on.
+    """
+    if len(image_paths) == 1:
+        return [_normalise(image_paths[0])]
+    workers = min(len(image_paths), max(1, (os.cpu_count() or 4)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(_normalise, image_paths))
+
+
 def images_to_pdf(
     image_paths: list[Path],
     output_path: Path,
@@ -58,11 +77,13 @@ def images_to_pdf(
     page_size: PageSize = "fit",
     orientation: Orientation = "portrait",
     margin_mm: float = 10.0,
+    perf: PerfTimer = NULL_TIMER,
 ) -> Path:
     """Combine images into one PDF, in order. Returns ``output_path``.
 
     ``fit`` sizes each page to its image; fixed sizes (a4/letter) centre the
-    image within the page minus margins.
+    image within the page minus margins. ``perf`` records the ``img_preprocess``
+    and ``img_assemble`` sub-phases when supplied.
     """
     if not image_paths:
         raise ProcessingError("No images to combine.")
@@ -79,11 +100,16 @@ def images_to_pdf(
         )
 
     try:
-        payload = [_normalise(path) for path in image_paths]
+        with perf.phase("img_preprocess"):
+            payload = _normalise_all(image_paths)
         kwargs = {"rotation": img2pdf.Rotation.ifvalid}
         if layout_fun is not None:
             kwargs["layout_fun"] = layout_fun
-        output_path.write_bytes(img2pdf.convert(payload, **kwargs))
+        # Stream straight to the output file rather than materialising the
+        # whole PDF as a bytes object first (halves peak memory for large
+        # albums — img2pdf already holds every source image in memory).
+        with perf.phase("img_assemble"), output_path.open("wb") as handle:
+            img2pdf.convert(payload, outputstream=handle, **kwargs)
     except ProcessingError:
         raise
     except Exception as exc:  # img2pdf raises assorted exception types

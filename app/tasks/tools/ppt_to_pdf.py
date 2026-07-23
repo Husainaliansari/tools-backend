@@ -33,13 +33,14 @@ def ppt_to_pdf(self, job_id: str) -> None:
         filter_name, filter_options = _export_filter(ctx.options)
 
         def operate(path, name, index):
-            output = libreoffice_convert(
-                path,
-                ctx.workspace,
-                filter_name=filter_name,
-                filter_options=filter_options or None,
-                display_name=name,
-            )
+            with ctx.perf.phase("libreoffice_convert"):
+                output = libreoffice_convert(
+                    path,
+                    ctx.workspace,
+                    filter_name=filter_name,
+                    filter_options=filter_options or None,
+                    display_name=name,
+                )
             return ProducedFile(output, f"{file_stem(name)}.pdf")
 
         # Presentations convert independently — run them concurrently, one

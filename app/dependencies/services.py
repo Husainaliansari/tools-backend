@@ -14,6 +14,7 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
+from app.services.admin import AdminService
 from app.services.download import DownloadService
 from app.services.feedback import FeedbackService
 from app.services.jobs import JobService
@@ -44,7 +45,14 @@ def get_feedback_service(
     return FeedbackService(session)
 
 
+def get_admin_service(
+    session: Annotated[AsyncSession, Depends(get_db)],
+) -> AdminService:
+    return AdminService(session)
+
+
 UploadServiceDep = Annotated[UploadService, Depends(get_upload_service)]
 DownloadServiceDep = Annotated[DownloadService, Depends(get_download_service)]
 JobServiceDep = Annotated[JobService, Depends(get_job_service)]
 FeedbackServiceDep = Annotated[FeedbackService, Depends(get_feedback_service)]
+AdminServiceDep = Annotated[AdminService, Depends(get_admin_service)]

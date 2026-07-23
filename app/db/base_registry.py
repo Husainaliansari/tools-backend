@@ -12,9 +12,38 @@ import them here, e.g.::
 from __future__ import annotations
 
 from app.db.base import Base
+from app.models.admin import (
+    AdminAuditLog,
+    Announcement,
+    AppSetting,
+    BlogPost,
+    ContactMessage,
+    ContentPage,
+    ErrorLog,
+    Faq,
+    Subscription,
+    ToolConfig,
+)
 from app.models.feedback import Feedback
 from app.models.file import StoredFile
 from app.models.job import JobFile, ProcessingJob
 from app.models.user import User
 
-__all__ = ["Base", "Feedback", "JobFile", "ProcessingJob", "StoredFile", "User"]
+__all__ = [
+    "AdminAuditLog",
+    "Announcement",
+    "AppSetting",
+    "Base",
+    "BlogPost",
+    "ContactMessage",
+    "ContentPage",
+    "ErrorLog",
+    "Faq",
+    "Feedback",
+    "JobFile",
+    "ProcessingJob",
+    "StoredFile",
+    "Subscription",
+    "ToolConfig",
+    "User",
+]

@@ -81,6 +81,16 @@ class BaseAppSettings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 14
     # Hosts allowed by the TrustedHost middleware (Host header allow-list).
     ALLOWED_HOSTS: list[str] = Field(default_factory=lambda: ["*"])
+
+    # --------------------------------------------------------------------- #
+    # Admin panel bootstrap
+    # --------------------------------------------------------------------- #
+    # On startup the app ensures an admin account exists: if ADMIN_EMAIL is
+    # set it is created (with ADMIN_PASSWORD) or promoted to admin. Safe dev
+    # defaults are provided; override via env in every real deployment.
+    ADMIN_EMAIL: str = "admin@pdfly.com"
+    ADMIN_PASSWORD: str = "Admin@12345"
+    ADMIN_NAME: str = "Admin"
     # Origins allowed by CORS middleware.
     CORS_ORIGINS: list[AnyHttpUrl | Literal["*"]] = Field(default_factory=list)
     CORS_ALLOW_CREDENTIALS: bool = True

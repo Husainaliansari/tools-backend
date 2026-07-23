@@ -49,6 +49,8 @@ class UserOut(ORMSchema):
     email_verified_at: datetime | None = None
     avatar: str | None = None
     plan: str = "free"
+    is_admin: bool = False
+    status: str = "active"
     created_at: datetime
     updated_at: datetime
 

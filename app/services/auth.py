@@ -7,6 +7,7 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.constants import UserStatus
 from app.core.security import (
     create_token,
     decode_token,
@@ -56,6 +57,10 @@ class AuthService:
         # Constant-shape failure: never reveal whether the email exists.
         if user is None or not verify_password(password, user.password_hash):
             raise UnauthorizedError("Invalid email or password.")
+        # Suspended accounts cannot sign in (additive; no effect on the
+        # default 'active' status every existing account carries).
+        if user.status == UserStatus.SUSPENDED:
+            raise UnauthorizedError("This account has been suspended.")
         logger.info("user_logged_in", user_id=str(user.id))
         return user, _token_pair(user.id)
 

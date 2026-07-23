@@ -46,6 +46,9 @@ ocrmypdf>=17.8.0        # searchable text layer for scans (needs Tesseract + Gho
 PyJWT>=2.10.0
 bcrypt>=4.2.0
 
+# System metrics (admin Server Performance page)
+psutil>=5.9.0
+
 # Structured logging
 structlog>=24.4.0
 
