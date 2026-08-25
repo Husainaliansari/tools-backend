@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.context import get_request_id
@@ -48,14 +48,27 @@ def create_tool_router(service_cls: type[BaseToolService]) -> APIRouter:
         payload: JobCreateRequest,
         session: SessionDep,
         user: OptionalUserDep,
+        request: Request,
     ) -> SuccessResponse[JobInfo]:
         user_id = user.id if user else None
+        
+        visitor_id = request.headers.get("x-visitor-id")
+        session_id = request.headers.get("x-session-id")
+        user_agent = request.headers.get("user-agent", "")
+        accept_lang = request.headers.get("accept-language", "")
+        cf_country = request.headers.get("cf-ipcountry")
+
         service = service_cls(session)
         job = await service.create_job(
             payload.file_ids,
             payload.options,
             user_id=user_id,
             plan=user.plan if user else None,
+            visitor_id=visitor_id,
+            session_id=session_id,
+            user_agent=user_agent,
+            accept_lang=accept_lang,
+            cf_country=cf_country,
         )
         # Re-read with file links so the response carries input metadata
         # (and, under eager test execution, the final status).

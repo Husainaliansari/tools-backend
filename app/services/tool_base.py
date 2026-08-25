@@ -69,10 +69,37 @@ class BaseToolService(ABC):
         *,
         user_id: uuid.UUID | None = None,
         plan: str | None = None,
+        visitor_id: str | None = None,
+        session_id: str | None = None,
+        user_agent: str = "",
+        accept_lang: str = "",
+        cf_country: str | None = None,
     ) -> ProcessingJob:
         """Validate, persist and enqueue a job. Returns the queued job."""
         validated_options = self._validate_options(options or {})
         input_files = await self._validate_inputs(file_ids, user_id=user_id, plan=plan)
+
+        # Parse client user agent and localization headers
+        from app.services.admin import AdminService
+        from app.models.analytics import PageVisit
+        from sqlalchemy import select
+
+        os_name, device_type, browser_name = AdminService._parse_user_agent(user_agent)
+        country_code = AdminService._detect_country(accept_lang, cf_country)
+
+        # Lookup session traffic source
+        source_name = "Direct"
+        if session_id:
+            source_stmt = select(PageVisit.source).where(PageVisit.session_id == session_id).limit(1)
+            session_source = (await self.session.execute(source_stmt)).scalar()
+            if session_source:
+                source_name = session_source
+
+        # Lookup is_returning for visitor
+        is_returning = False
+        if visitor_id:
+            exists_stmt = select(select(PageVisit.id).where(PageVisit.visitor_id == visitor_id).exists())
+            is_returning = bool((await self.session.execute(exists_stmt)).scalar())
 
         job = ProcessingJob(
             tool=self.slug.value,
@@ -82,6 +109,14 @@ class BaseToolService(ABC):
             user_id=user_id,
             expires_at=datetime.now(UTC)
             + timedelta(hours=self._settings.FILE_RETENTION_HOURS),
+            visitor_id=visitor_id,
+            session_id=session_id,
+            device=device_type,
+            browser=browser_name,
+            os=os_name,
+            country=country_code,
+            source=source_name,
+            is_returning=is_returning,
         )
         self.jobs.add(job)
         await self.jobs.flush()

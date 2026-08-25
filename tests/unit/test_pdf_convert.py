@@ -12,9 +12,14 @@ import pytest
 from app.exceptions.jobs import ProcessingError
 from app.utils.pdf_convert import (
     _fallback_pdf_to_docx,
+    apply_rtl_direction,
     pdf_to_docx,
     prepare_pdf_for_conversion,
 )
+
+#: Arabic with an embedded number, percentage and Latin word — the mixed run
+#: that renders wrongly when the paragraph has no base direction.
+ARABIC = "مرحبا بالعالم 2026 والنسبة %100 (اختبار) MARKET"
 
 
 @pytest.fixture
@@ -135,3 +140,95 @@ class TestPdfToDocx:
         text = "\n".join(p.text for p in Document(str(output)).paragraphs)
         assert "Hello page 1" not in text
         assert "Hello page 2" in text
+
+
+def _body_xml(path) -> str:
+    import zipfile
+
+    with zipfile.ZipFile(path) as archive:
+        return archive.read("word/document.xml").decode("utf-8")
+
+
+def _write_docx(path, *paragraphs, in_table: bool = False):
+    from docx import Document
+
+    document = Document()
+    if in_table:
+        table = document.add_table(rows=len(paragraphs), cols=1)
+        for row, text in zip(table.rows, paragraphs):
+            row.cells[0].paragraphs[0].add_run(text)
+    else:
+        for text in paragraphs:
+            document.add_paragraph().add_run(text)
+    document.save(str(path))
+    return path
+
+
+class TestRtlDirection:
+    """pdf2docx reproduces glyph positions but emits no direction markup, so
+    Arabic/Hebrew lands in LTR paragraphs and Word bidi-reorders it wrongly."""
+
+    def test_arabic_paragraph_gets_bidi_and_rtl_runs(self, tmp_path):
+        path = _write_docx(tmp_path / "ar.docx", ARABIC)
+
+        assert apply_rtl_direction(path) == 1
+
+        xml = _body_xml(path)
+        assert "<w:bidi" in xml  # paragraph base direction
+        assert "<w:rtl" in xml  # run direction
+
+    def test_latin_document_is_left_untouched(self, tmp_path):
+        path = _write_docx(tmp_path / "en.docx", "Hello world 2026 (test)")
+
+        assert apply_rtl_direction(path) == 0
+        assert "<w:bidi" not in _body_xml(path)
+
+    def test_one_arabic_word_does_not_flip_an_english_paragraph(self, tmp_path):
+        path = _write_docx(
+            tmp_path / "mixed.docx",
+            "The Arabic word for peace is سلام and it is written thus.",
+        )
+
+        assert apply_rtl_direction(path) == 0
+
+    def test_paragraphs_inside_tables_are_marked(self, tmp_path):
+        """Most pdf2docx output text lives in cells, not body paragraphs."""
+        path = _write_docx(tmp_path / "tbl.docx", ARABIC, ARABIC, in_table=True)
+
+        assert apply_rtl_direction(path) == 2
+
+    def test_rerunning_does_not_duplicate_markup(self, tmp_path):
+        path = _write_docx(tmp_path / "twice.docx", ARABIC)
+
+        apply_rtl_direction(path)
+        first = _body_xml(path).count("<w:bidi")
+        apply_rtl_direction(path)
+
+        assert _body_xml(path).count("<w:bidi") == first
+
+    def test_property_order_is_normalised(self, tmp_path):
+        """``w:pPr`` children are a schema sequence; pdf2docx emits some out
+        of order, which puts indentation/justification at risk of being
+        ignored. The pass must reseat them without dropping any."""
+        from docx import Document
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+
+        path = tmp_path / "unordered.docx"
+        document = Document()
+        paragraph = document.add_paragraph()
+        paragraph.add_run(ARABIC)
+        pPr = paragraph._p.get_or_add_pPr()
+        for tag in ("w:jc", "w:ind", "w:spacing", "w:widowControl"):
+            pPr.append(OxmlElement(tag))  # deliberately reversed
+        document.save(str(path))
+
+        apply_rtl_direction(path)
+
+        reopened = Document(str(path))
+        children = [
+            qn(f"w:{t}")
+            for t in ("widowControl", "bidi", "spacing", "ind", "jc")
+        ]
+        actual = [c.tag for c in reopened.paragraphs[0]._p.get_or_add_pPr()]
+        assert actual == children

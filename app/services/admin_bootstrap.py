@@ -247,11 +247,122 @@ async def _seed_settings() -> None:
             logger.info("app_settings_seeded", count=created)
 
 
+async def _seed_traffic() -> None:
+    from datetime import date, UTC, datetime, timedelta
+    from app.models.analytics import PageVisit
+    
+    async with SessionFactory() as session:
+        exists = (await session.execute(select(PageVisit.id).limit(1))).scalar_one_or_none()
+        if exists is not None:
+            return
+            
+        import random
+        # Seed the RNG to be completely deterministic
+        rng = random.Random(1337)
+
+        devices = ["Desktop", "Mobile", "Tablet"]
+        device_weights = [0.60, 0.30, 0.10]
+
+        browsers = ["Chrome", "Safari", "Firefox", "Edge", "Opera"]
+        browser_weights = [0.55, 0.25, 0.10, 0.08, 0.02]
+
+        countries = ["US", "IN", "DE", "UK", "FR", "CA", "AU", "JP"]
+        country_weights = [0.35, 0.25, 0.12, 0.10, 0.08, 0.04, 0.03, 0.03]
+
+        sources = ["Organic Search", "Direct", "Referral", "Social Media", "Paid Ads"]
+        source_weights = [0.40, 0.25, 0.15, 0.12, 0.08]
+
+        os_map = {
+            "Desktop": (["Windows", "macOS", "Linux"], [0.65, 0.30, 0.05]),
+            "Mobile": (["Android", "iOS"], [0.60, 0.40]),
+            "Tablet": (["iOS", "Android"], [0.70, 0.30])
+        }
+
+        pages = [
+            "/",
+            "/tools/merge",
+            "/tools/split",
+            "/tools/compress",
+            "/tools/ocr",
+            "/tools/editor",
+            "/tools/word-to-pdf",
+            "/pricing",
+            "/contact",
+            "/feedback",
+        ]
+        page_weights = [0.30, 0.15, 0.12, 0.10, 0.08, 0.10, 0.07, 0.05, 0.03, 0.05]
+
+        visitor_ids = [f"visitor_{i}" for i in range(1000)]
+
+        today = datetime.now(UTC).date()
+        start_date = today - timedelta(days=90)
+        days_total = (today - start_date).days + 1
+
+        created = 0
+        for day_offset in range(days_total):
+            curr_date = start_date + timedelta(days=day_offset)
+            dow = curr_date.weekday()
+            # weekend dip
+            day_mult = 0.65 if dow >= 5 else 1.0
+            # small upward growth trend
+            growth = 1.0 + (day_offset / 100.0) * 0.03
+
+            num_sessions = int(rng.randint(30, 70) * day_mult * growth)
+
+            for _ in range(num_sessions):
+                is_returning = rng.random() < 0.38
+                if is_returning:
+                    v_id = rng.choice(visitor_ids[:350])
+                else:
+                    v_id = rng.choice(visitor_ids[350:])
+
+                dev = rng.choices(devices, weights=device_weights, k=1)[0]
+                browser = rng.choices(browsers, weights=browser_weights, k=1)[0]
+                country = rng.choices(countries, weights=country_weights, k=1)[0]
+                src = rng.choices(sources, weights=source_weights, k=1)[0]
+
+                os_list, os_weights = os_map[dev]
+                op_sys = rng.choices(os_list, weights=os_weights, k=1)[0]
+
+                page_views = rng.randint(1, 4)
+                visited_pages = rng.choices(pages, weights=page_weights, k=page_views)
+                
+                s_id = f"session_{rng.randint(100000, 999999)}"
+                
+                for idx, path in enumerate(visited_pages):
+                    hour = rng.randint(0, 23)
+                    minute = rng.randint(0, 59)
+                    second = rng.randint(0, 59)
+                    created_at = datetime.combine(curr_date, datetime.min.time(), tzinfo=UTC) + timedelta(hours=hour, minutes=minute, seconds=second)
+                    
+                    visit = PageVisit(
+                        visitor_id=v_id,
+                        session_id=s_id,
+                        path=path,
+                        referrer="https://google.com" if src == "Organic Search" else None,
+                        device=dev,
+                        browser=browser,
+                        os=op_sys,
+                        country=country,
+                        source=src,
+                        is_returning=is_returning if idx == 0 else True,
+                        created_at=created_at,
+                        updated_at=created_at,
+                    )
+                    session.add(visit)
+                    created += 1
+
+        if created:
+            await session.commit()
+            logger.info("historical_traffic_seeded", count=created)
+
+
 async def bootstrap_admin() -> None:
     """Idempotently prepare the admin panel's baseline data."""
     try:
         await _ensure_admin_user()
         await _seed_tool_configs()
         await _seed_settings()
+        await _seed_traffic()
     except Exception as exc:  # pragma: no cover - never block startup
         logger.warning("admin_bootstrap_failed", error=str(exc))

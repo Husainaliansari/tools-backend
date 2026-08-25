@@ -14,6 +14,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     Enum,
     ForeignKey,
@@ -75,6 +76,18 @@ class ProcessingJob(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
     expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+
+    # Analytics fields
+    visitor_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    session_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    device: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    browser: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    os: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    country: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    source: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    is_returning: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
     )
 
     files: Mapped[list[JobFile]] = relationship(

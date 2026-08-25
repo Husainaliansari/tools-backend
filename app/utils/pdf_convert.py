@@ -31,6 +31,7 @@ import io
 import logging
 import multiprocessing
 import os
+import re
 from pathlib import Path
 
 from app.exceptions.jobs import ProcessingError
@@ -100,12 +101,15 @@ def prepare_pdf_for_conversion(
         import fitz
 
         with fitz.open(str(input_path)) as doc:
-            if doc.needs_pass and not doc.authenticate(""):
+            was_protected = doc.needs_pass
+            if was_protected and not doc.authenticate(""):
                 raise ProcessingError(
                     f"'{name}' is password-protected. Use the Unlock PDF tool "
                     "to remove the password, then convert it."
                 )
-            needs_normalize = bool(doc.is_encrypted or doc.needs_pass)
+            # authenticate() flips is_encrypted/needs_pass to False on success,
+            # so the original protected state must be captured before calling it.
+            needs_normalize = bool(doc.is_encrypted or was_protected)
             if not needs_normalize and doc.page_count == 0:
                 raise ProcessingError(f"'{name}' contains no pages.")
     except ProcessingError:
@@ -138,6 +142,154 @@ def prepare_pdf_for_conversion(
         ) from exc
     logger.info("pdf_normalized_for_conversion", input=name)
     return normalized
+
+
+#: Right-to-left scripts: Hebrew, Arabic, Syriac, Thaana, N'Ko, Samaritan,
+#: Mandaic, Arabic Extended-A and the Arabic presentation-form blocks.
+_RTL_CHARS = re.compile(
+    "[֐-׿؀-ۿ܀-ݏހ-޿߀-߿"
+    "ࠀ-࡟ࢠ-ࣿיִ-﷿ﹰ-﻿]"
+)
+
+#: A paragraph flips to RTL only when RTL characters dominate its letters —
+#: one Arabic word quoted inside an English sentence must not flip it.
+_RTL_DOMINANCE = 0.4
+
+#: ``w:pPr`` / ``w:rPr`` children are an ordered *sequence* in OOXML — the
+#: schema fixes their positions, and a property in the wrong slot is liable to
+#: be ignored by the consumer. pdf2docx emits several out of order (notably
+#: ``w:widowControl`` after ``w:autoSpace*`` and ``w:w`` before ``w:rFonts``),
+#: which puts indentation/justification at risk, so the whole sequence is
+#: re-sorted on the way out.
+_PPR_ORDER = (
+    "pStyle", "keepNext", "keepLines", "pageBreakBefore", "framePr",
+    "widowControl", "numPr", "suppressLineNumbers", "pBdr", "shd", "tabs",
+    "suppressAutoHyphens", "kinsoku", "wordWrap", "overflowPunct",
+    "topLinePunct", "autoSpaceDE", "autoSpaceDN", "bidi", "adjustRightInd",
+    "snapToGrid", "spacing", "ind", "contextualSpacing", "mirrorIndents",
+    "suppressOverlap", "jc", "textDirection", "textAlignment",
+    "textboxTightWrap", "outlineLvl", "divId", "cnfStyle", "rPr", "sectPr",
+    "pPrChange",
+)
+_RPR_ORDER = (
+    "rStyle", "rFonts", "b", "bCs", "i", "iCs", "caps", "smallCaps", "strike",
+    "dstrike", "outline", "shadow", "emboss", "imprint", "noProof",
+    "snapToGrid", "vanish", "webHidden", "color", "spacing", "w", "kern",
+    "position", "sz", "szCs", "highlight", "u", "effect", "bdr", "shd",
+    "fitText", "vertAlign", "rtl", "cs", "em", "lang", "eastAsianLayout",
+    "specVanish", "oMath",
+)
+
+#: Tags that follow the two elements inserted below, for
+#: ``insert_element_before`` to land them in the right slot.
+_PPR_AFTER_BIDI = tuple(
+    f"w:{tag}" for tag in _PPR_ORDER[_PPR_ORDER.index("bidi") + 1:]
+)
+_RPR_AFTER_RTL = tuple(
+    f"w:{tag}" for tag in _RPR_ORDER[_RPR_ORDER.index("rtl") + 1:]
+)
+
+
+def _iter_paragraphs(document):
+    """Every paragraph in the document body, in order, each exactly once.
+
+    Walking the XML beats recursing through ``tables``/``cells``: it reaches
+    paragraphs at any nesting depth, and a merged cell — which the cell API
+    repeats once per grid position it spans — is visited a single time.
+    """
+    from docx.oxml.ns import qn
+    from docx.text.paragraph import Paragraph
+
+    for element in document.element.body.iter(qn("w:p")):
+        yield Paragraph(element, document)
+
+
+def _normalize_property_order(document) -> int:
+    """Re-sort ``w:pPr``/``w:rPr`` children into schema order; returns fixes.
+
+    Sorting is stable and only reorders known tags, so unrecognised extensions
+    keep their relative position and nothing is dropped.
+    """
+    from docx.oxml.ns import qn
+
+    ranks = {
+        qn("w:pPr"): {qn(f"w:{t}"): i for i, t in enumerate(_PPR_ORDER)},
+        qn("w:rPr"): {qn(f"w:{t}"): i for i, t in enumerate(_RPR_ORDER)},
+    }
+    fixed = 0
+    for container_tag, rank in ranks.items():
+        for element in document.element.body.iter(container_tag):
+            children = list(element)
+            if len(children) < 2:
+                continue
+            # Unknown tags stay put by ranking them where they already sit.
+            keyed = [
+                (rank.get(child.tag, rank.get(children[i - 1].tag, -1) if i else -1), i, child)
+                for i, child in enumerate(children)
+            ]
+            ordered = [child for _, _, child in sorted(keyed, key=lambda k: (k[0], k[1]))]
+            if ordered == children:
+                continue
+            for child in ordered:
+                element.append(child)  # append moves the existing node
+            fixed += 1
+    return fixed
+
+
+def apply_rtl_direction(output_path: Path) -> int:
+    """Tag right-to-left paragraphs in a converted DOCX; returns the count.
+
+    pdf2docx reproduces glyph positions but never emits direction markup, so
+    Arabic/Hebrew output lands in left-to-right paragraphs: Word then applies
+    the bidi algorithm with the wrong base direction and trailing punctuation,
+    digits and embedded Latin words jump to the wrong end of the line.
+
+    Only ``w:bidi`` (paragraph base direction) and ``w:rtl`` (run direction)
+    are set. Alignment is left alone — pdf2docx derives it from the real glyph
+    geometry, so it already matches the page — and section/table direction is
+    left alone too, because those reverse column order that pdf2docx has
+    already laid out visually.
+    """
+    try:
+        from docx import Document
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+    except ImportError:  # pragma: no cover - deployment problem
+        return 0
+
+    document = Document(str(output_path))
+    flipped = 0
+
+    for paragraph in _iter_paragraphs(document):
+        text = paragraph.text
+        if not text:
+            continue
+        letters = sum(1 for ch in text if ch.isalpha())
+        if not letters:
+            continue
+        if len(_RTL_CHARS.findall(text)) / letters < _RTL_DOMINANCE:
+            continue
+
+        pPr = paragraph._p.get_or_add_pPr()
+        if pPr.find(qn("w:bidi")) is None:
+            pPr.insert_element_before(OxmlElement("w:bidi"), *_PPR_AFTER_BIDI)
+        flipped += 1
+
+        # Mark only the runs that actually hold RTL text: Latin words and
+        # numbers inside an RTL paragraph must stay LTR for bidi to work.
+        for run in paragraph.runs:
+            if not _RTL_CHARS.search(run.text):
+                continue
+            rPr = run._r.get_or_add_rPr()
+            if rPr.find(qn("w:rtl")) is None:
+                rPr.insert_element_before(OxmlElement("w:rtl"), *_RPR_AFTER_RTL)
+
+    reordered = _normalize_property_order(document)
+    if flipped or reordered:
+        document.save(str(output_path))
+    if reordered:
+        logger.debug("docx_property_order_normalized", elements=reordered)
+    return flipped
 
 
 def _fallback_pdf_to_docx(
@@ -250,4 +402,14 @@ def pdf_to_docx(
         raise ProcessingError(
             f"Converting '{name}' produced an empty document."
         )
+
+    # Direction markup is a finishing pass over a file that already converted:
+    # a failure here must downgrade to LTR output, never fail the job.
+    try:
+        flipped = apply_rtl_direction(output_path)
+        if flipped:
+            logger.info("rtl_paragraphs_marked", input=name, paragraphs=flipped)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("rtl_pass_failed", input=name, error=str(exc))
+
     return output_path

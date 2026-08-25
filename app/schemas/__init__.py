@@ -6,6 +6,7 @@ request/response models are added in their own modules and inherit from
 :class:`app.schemas.base.BaseSchema`.
 """
 
+from app.schemas.analytics import PageVisitCreate
 from app.schemas.base import BaseSchema, ORMSchema
 from app.schemas.feedback import CaptchaChallenge, FeedbackOut
 from app.schemas.file import FileInfo, UploadResult
@@ -29,6 +30,7 @@ __all__ = [
     "JobError",
     "JobInfo",
     "ORMSchema",
+    "PageVisitCreate",
     "SuccessResponse",
     "UploadResult",
 ]

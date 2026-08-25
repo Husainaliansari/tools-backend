@@ -24,6 +24,7 @@ from app.models.admin import (
     Subscription,
     ToolConfig,
 )
+from app.models.analytics import PageVisit
 from app.models.feedback import Feedback
 from app.models.file import StoredFile
 from app.models.job import JobFile, ProcessingJob
@@ -41,6 +42,7 @@ __all__ = [
     "Faq",
     "Feedback",
     "JobFile",
+    "PageVisit",
     "ProcessingJob",
     "StoredFile",
     "Subscription",

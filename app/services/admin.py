@@ -44,6 +44,7 @@ from app.models.admin import (
     Subscription,
     ToolConfig,
 )
+from app.models.analytics import PageVisit
 from app.models.feedback import Feedback
 from app.models.file import StoredFile
 from app.models.job import JobFile, ProcessingJob
@@ -166,6 +167,9 @@ class AdminService:
                 )
             ).scalar_one()
         )
+        total_feedback = int(
+            (await s.execute(select(func.count(Feedback.id)))).scalar_one()
+        )
 
         return {
             "kpis": {
@@ -177,6 +181,7 @@ class AdminService:
                 "monthly_revenue_cents": revenue_cents,
                 "storage_bytes": storage_bytes,
                 "failed_jobs": failed_jobs,
+                "total_feedback": total_feedback,
                 "server_status": "Operational",
             },
             "conversion_trend": await self._monthly_conversions(),
@@ -184,37 +189,581 @@ class AdminService:
             "recent_activity": await self._recent_activity(limit=6),
         }
 
-    async def analytics(self) -> dict[str, Any]:
-        s = self.session
-        total_conversions = int(
-            (await s.execute(select(func.count(ProcessingJob.id)))).scalar_one()
+    async def track_page_visit(
+        self,
+        *,
+        visitor_id: str,
+        session_id: str,
+        path: str,
+        referrer: str | None = None,
+        source: str | None = None,
+        user_agent: str = "",
+        accept_lang: str = "",
+        cf_country: str | None = None,
+    ) -> None:
+        exists_stmt = select(select(PageVisit.id).where(PageVisit.visitor_id == visitor_id).exists())
+        is_returning = bool((await self.session.execute(exists_stmt)).scalar())
+
+        os_name, device_type, browser_name = self._parse_user_agent(user_agent)
+        country_code = self._detect_country(accept_lang, cf_country)
+        source_name = source or self._detect_source(referrer)
+
+        visit = PageVisit(
+            visitor_id=visitor_id,
+            session_id=session_id,
+            path=path,
+            referrer=referrer,
+            device=device_type,
+            browser=browser_name,
+            os=os_name,
+            country=country_code,
+            source=source_name,
+            is_returning=is_returning,
         )
-        unique_users = int(
+        self.session.add(visit)
+        await self.session.commit()
+
+    @staticmethod
+    def _parse_user_agent(ua_string: str) -> tuple[str, str, str]:
+        if not ua_string:
+            return "Other", "Desktop", "Other"
+        ua = ua_string.lower()
+
+        # OS detection
+        if "windows" in ua:
+            os_name = "Windows"
+        elif "macintosh" in ua or "mac os x" in ua:
+            if "ipad" in ua or "iphone" in ua:
+                os_name = "iOS"
+            else:
+                os_name = "macOS"
+        elif "android" in ua:
+            os_name = "Android"
+        elif "iphone" in ua or "ipad" in ua or "ipod" in ua:
+            os_name = "iOS"
+        elif "linux" in ua:
+            os_name = "Linux"
+        else:
+            os_name = "Other"
+
+        # Device detection
+        if "mobi" in ua or "iphone" in ua or "ipod" in ua or "android" in ua and "mobile" in ua:
+            device_type = "Mobile"
+        elif "ipad" in ua or "tablet" in ua or "playbook" in ua or "kindle" in ua or ("android" in ua and "mobile" not in ua):
+            device_type = "Tablet"
+        else:
+            device_type = "Desktop"
+
+        # Browser detection
+        if "opera" in ua or "opr/" in ua:
+            browser_name = "Opera"
+        elif "edge" in ua or "edg/" in ua:
+            browser_name = "Edge"
+        elif "chrome" in ua or "crios" in ua:
+            browser_name = "Chrome"
+        elif "firefox" in ua or "fxios" in ua:
+            browser_name = "Firefox"
+        elif "safari" in ua and "chrome" not in ua and "chromium" not in ua:
+            browser_name = "Safari"
+        else:
+            browser_name = "Other"
+
+        return os_name, device_type, browser_name
+
+    @staticmethod
+    def _detect_country(accept_lang: str, cf_country: str | None) -> str:
+        if cf_country:
+            return cf_country.upper()
+        if accept_lang:
+            first_lang = accept_lang.split(",")[0].strip()
+            if "-" in first_lang:
+                parts = first_lang.split("-")
+                country_code = parts[-1].upper()
+                if len(country_code) == 2:
+                    return country_code
+        return "US"
+
+    @staticmethod
+    def _detect_source(referrer: str | None) -> str:
+        if not referrer:
+            return "Direct"
+        ref = referrer.lower()
+        if "google" in ref:
+            return "Organic Search"
+        elif "facebook" in ref or "t.co" in ref or "twitter" in ref or "instagram" in ref or "linkedin" in ref:
+            return "Social Media"
+        elif "github" in ref or "reddit" in ref:
+            return "Referral"
+        elif "ads" in ref or "googleads" in ref:
+            return "Paid Ads"
+        return "Referral"
+
+    async def analytics(
+        self,
+        *,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        device: str | None = None,
+        browser: str | None = None,
+        country: str | None = None,
+        source: str | None = None,
+        visitor_type: str | None = "total",
+        group_by: str | None = "daily",
+    ) -> dict[str, Any]:
+        s = self.session
+        from datetime import date
+        today = datetime.now(UTC).date()
+
+        # Parse end date
+        parsed_end = today
+        if end_date:
+            try:
+                parsed_end = datetime.strptime(end_date, "%Y-%m-%d").date()
+            except ValueError:
+                pass
+
+        # Parse start date
+        parsed_start = parsed_end - timedelta(days=30)
+        if start_date:
+            try:
+                parsed_start = datetime.strptime(start_date, "%Y-%m-%d").date()
+            except ValueError:
+                pass
+
+        # Combine into datetime bounds (inclusive of full start and end days)
+        start_dt = datetime.combine(parsed_start, datetime.min.time(), tzinfo=UTC)
+        end_dt = datetime.combine(parsed_end, datetime.max.time(), tzinfo=UTC)
+
+        # Construct base filters for PageVisit queries
+        base_filter = [
+            PageVisit.created_at >= start_dt,
+            PageVisit.created_at <= end_dt
+        ]
+        if device:
+            base_filter.append(func.lower(PageVisit.device) == device.lower())
+        if browser:
+            base_filter.append(func.lower(PageVisit.browser) == browser.lower())
+        if country:
+            base_filter.append(func.lower(PageVisit.country) == country.lower())
+        if source:
+            base_filter.append(func.lower(PageVisit.source) == source.lower())
+
+        if visitor_type == "unique":
+            base_filter.append(PageVisit.is_returning == False)
+        elif visitor_type == "returning":
+            base_filter.append(PageVisit.is_returning == True)
+
+        # Build query for Core KPIs
+        pv_query = select(func.count(PageVisit.id)).where(*base_filter)
+        page_views = int((await s.execute(pv_query)).scalar_one() or 0)
+
+        tv_query = select(func.count(func.distinct(PageVisit.visitor_id))).where(*base_filter)
+        total_visitors = int((await s.execute(tv_query)).scalar_one() or 0)
+
+        uv_query = select(func.count(func.distinct(PageVisit.visitor_id))).where(*base_filter, PageVisit.is_returning == False)
+        unique_visitors = int((await s.execute(uv_query)).scalar_one() or 0)
+
+        rv_query = select(func.count(func.distinct(PageVisit.visitor_id))).where(*base_filter, PageVisit.is_returning == True)
+        returning_visitors = int((await s.execute(rv_query)).scalar_one() or 0)
+
+        session_query = select(func.count(func.distinct(PageVisit.session_id))).where(*base_filter)
+        total_sessions = int((await s.execute(session_query)).scalar_one() or 0)
+
+        # Calculations for period comparisons
+        async def get_metric_val_for_range(s_date: date, e_date: date, v_type: str | None) -> int:
+            s_dt = datetime.combine(s_date, datetime.min.time(), tzinfo=UTC)
+            e_dt = datetime.combine(e_date, datetime.max.time(), tzinfo=UTC)
+            filters = [
+                PageVisit.created_at >= s_dt,
+                PageVisit.created_at <= e_dt
+            ]
+            if device:
+                filters.append(func.lower(PageVisit.device) == device.lower())
+            if browser:
+                filters.append(func.lower(PageVisit.browser) == browser.lower())
+            if country:
+                filters.append(func.lower(PageVisit.country) == country.lower())
+            if source:
+                filters.append(func.lower(PageVisit.source) == source.lower())
+
+            if v_type == "unique":
+                filters.append(PageVisit.is_returning == False)
+                q = select(func.count(func.distinct(PageVisit.visitor_id))).where(*filters)
+            elif v_type == "returning":
+                filters.append(PageVisit.is_returning == True)
+                q = select(func.count(func.distinct(PageVisit.visitor_id))).where(*filters)
+            else:
+                q = select(func.count(func.distinct(PageVisit.visitor_id))).where(*filters)
+            return int((await s.execute(q)).scalar_one() or 0)
+
+        # Today vs Yesterday
+        today_val = await get_metric_val_for_range(today, today, visitor_type)
+        yesterday_val = await get_metric_val_for_range(today - timedelta(days=1), today - timedelta(days=1), visitor_type)
+        today_growth = round(((today_val - yesterday_val) / yesterday_val * 100), 1) if yesterday_val else 0.0
+
+        # This Week vs Last Week
+        this_week_val = await get_metric_val_for_range(today - timedelta(days=6), today, visitor_type)
+        last_week_val = await get_metric_val_for_range(today - timedelta(days=13), today - timedelta(days=7), visitor_type)
+        week_growth = round(((this_week_val - last_week_val) / last_week_val * 100), 1) if last_week_val else 0.0
+
+        # This Month vs Last Month
+        this_month_val = await get_metric_val_for_range(today - timedelta(days=29), today, visitor_type)
+        last_month_val = await get_metric_val_for_range(today - timedelta(days=59), today - timedelta(days=30), visitor_type)
+        month_growth = round(((this_month_val - last_month_val) / last_month_val * 100), 1) if last_month_val else 0.0
+
+        # Traffic trend over time (charts)
+        if group_by == "yearly":
+            date_trunc_field = func.date_trunc("year", PageVisit.created_at)
+        elif group_by == "monthly":
+            date_trunc_field = func.date_trunc("month", PageVisit.created_at)
+        elif group_by == "weekly":
+            date_trunc_field = func.date_trunc("week", PageVisit.created_at)
+        else: # daily
+            date_trunc_field = func.date_trunc("day", PageVisit.created_at)
+
+        # Construct group by query
+        if visitor_type == "unique":
+            metric_agg = func.count(func.distinct(PageVisit.visitor_id))
+        else:
+            metric_agg = func.count(PageVisit.id)
+
+        trend_query = (
+            select(date_trunc_field.label("grp"), metric_agg.label("val"))
+            .where(*base_filter)
+            .group_by(date_trunc_field)
+            .order_by(date_trunc_field)
+        )
+        trend_rows = (await s.execute(trend_query)).all()
+
+        trend_points = []
+        for grp, val in trend_rows:
+            if not grp:
+                continue
+            if group_by == "yearly":
+                label = grp.strftime("%Y")
+            elif group_by == "monthly":
+                label = grp.strftime("%b %Y")
+            elif group_by == "weekly":
+                label = f"Wk {grp.isocalendar()[1]} ({grp.year})"
+            else: # daily
+                label = grp.strftime("%b %d")
+
+            trend_points.append({
+                "m": label,
+                "v": int(val or 0)
+            })
+
+        # Dimensions rankings helper
+        async def query_ranking(column_field, limit=7) -> list[dict]:
+            q = (
+                select(column_field, func.count(PageVisit.id))
+                .where(*base_filter)
+                .group_by(column_field)
+                .order_by(func.count(PageVisit.id).desc())
+                .limit(limit)
+            )
+            rows = (await s.execute(q)).all()
+            return [{"name": str(row[0]), "count": int(row[1] or 0)} for row in rows if row[0] is not None]
+
+        # Query rankings
+        top_pages_rows = await query_ranking(PageVisit.path)
+        top_browsers_rows = await query_ranking(PageVisit.browser)
+        top_devices_rows = await query_ranking(PageVisit.device)
+        top_os_rows = await query_ranking(PageVisit.os)
+        top_countries_rows = await query_ranking(PageVisit.country)
+        top_referrers_rows = await query_ranking(PageVisit.source)
+
+        top_pages = [{"page": r["name"], "count": r["count"]} for r in top_pages_rows]
+        top_browsers = [{"browser": r["name"], "count": r["count"]} for r in top_browsers_rows]
+        top_devices = [{"device": r["name"], "count": r["count"]} for r in top_devices_rows]
+        top_os = [{"os": r["name"], "count": r["count"]} for r in top_os_rows]
+        top_countries = [{"country": r["name"], "count": r["count"]} for r in top_countries_rows]
+        top_referrers = [{"referrer": r["name"], "count": r["count"]} for r in top_referrers_rows]
+
+        # Construct base filters for ProcessingJob in rankings query
+        job_base_filter = [
+            ProcessingJob.created_at >= start_dt,
+            ProcessingJob.created_at <= end_dt
+        ]
+        if device:
+            job_base_filter.append(func.lower(ProcessingJob.device) == device.lower())
+        if browser:
+            job_base_filter.append(func.lower(ProcessingJob.browser) == browser.lower())
+        if country:
+            job_base_filter.append(func.lower(ProcessingJob.country) == country.lower())
+        if source:
+            job_base_filter.append(func.lower(ProcessingJob.source) == source.lower())
+        if visitor_type == "unique":
+            job_base_filter.append(ProcessingJob.is_returning == False)
+        elif visitor_type == "returning":
+            job_base_filter.append(ProcessingJob.is_returning == True)
+
+        # Top Tools query
+        tools_query = (
+            select(ProcessingJob.tool, func.count(ProcessingJob.id))
+            .where(*job_base_filter)
+            .group_by(ProcessingJob.tool)
+            .order_by(func.count(ProcessingJob.id).desc())
+            .limit(7)
+        )
+        tools_rows = (await s.execute(tools_query)).all()
+        top_tools = [{"tool": tool, "count": int(cnt or 0)} for tool, cnt in tools_rows]
+
+        return {
+            "kpis": {
+                "total_visitors": total_visitors,
+                "unique_visitors": unique_visitors,
+                "returning_visitors": returning_visitors,
+                "page_views": page_views,
+                "total_sessions": total_sessions,
+            },
+            "comparison": {
+                "today": {"value": today_val, "growth_pct": today_growth},
+                "week": {"value": this_week_val, "growth_pct": week_growth},
+                "month": {"value": this_month_val, "growth_pct": month_growth},
+            },
+            "traffic_trend": trend_points,
+            "top_tools": top_tools,
+            "top_pages": top_pages,
+            "top_browsers": top_browsers,
+            "top_devices": top_devices,
+            "top_os": top_os,
+            "top_countries": top_countries,
+            "top_referrers": top_referrers,
+        }
+
+    async def tool_analytics(
+        self,
+        *,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        device: str | None = None,
+        browser: str | None = None,
+        country: str | None = None,
+        source: str | None = None,
+        visitor_type: str | None = "total",
+        group_by: str | None = "daily",
+    ) -> dict[str, Any]:
+        s = self.session
+        from datetime import date
+        today = datetime.now(UTC).date()
+
+        # Parse end date
+        parsed_end = today
+        if end_date:
+            try:
+                parsed_end = datetime.strptime(end_date, "%Y-%m-%d").date()
+            except ValueError:
+                pass
+
+        # Parse start date
+        parsed_start = parsed_end - timedelta(days=30)
+        if start_date:
+            try:
+                parsed_start = datetime.strptime(start_date, "%Y-%m-%d").date()
+            except ValueError:
+                pass
+
+        # Combine into datetime bounds
+        start_dt = datetime.combine(parsed_start, datetime.min.time(), tzinfo=UTC)
+        end_dt = datetime.combine(parsed_end, datetime.max.time(), tzinfo=UTC)
+
+        # Construct base filters for ProcessingJob queries
+        base_filter = [
+            ProcessingJob.created_at >= start_dt,
+            ProcessingJob.created_at <= end_dt
+        ]
+        if device:
+            base_filter.append(func.lower(ProcessingJob.device) == device.lower())
+        if browser:
+            base_filter.append(func.lower(ProcessingJob.browser) == browser.lower())
+        if country:
+            base_filter.append(func.lower(ProcessingJob.country) == country.lower())
+        if source:
+            base_filter.append(func.lower(ProcessingJob.source) == source.lower())
+        if visitor_type == "unique":
+            base_filter.append(ProcessingJob.is_returning == False)
+        elif visitor_type == "returning":
+            base_filter.append(ProcessingJob.is_returning == True)
+
+        # 1. General KPIs
+        total_execs = int(
             (
                 await s.execute(
-                    select(func.count(func.distinct(ProcessingJob.user_id)))
+                    select(func.count(ProcessingJob.id)).where(*base_filter)
                 )
-            ).scalar_one()
+            ).scalar_one() or 0
         )
-        completed = int(
+        success_execs = int(
             (
                 await s.execute(
                     select(func.count(ProcessingJob.id)).where(
+                        *base_filter,
                         ProcessingJob.status == JobStatus.COMPLETED
                     )
                 )
-            ).scalar_one()
+            ).scalar_one() or 0
         )
-        success_rate = round(100 * completed / total_conversions, 1) if total_conversions else 0.0
+        failed_execs = int(
+            (
+                await s.execute(
+                    select(func.count(ProcessingJob.id)).where(
+                        *base_filter,
+                        ProcessingJob.status == JobStatus.FAILED
+                    )
+                )
+            ).scalar_one() or 0
+        )
+        total_files = int(
+            (
+                await s.execute(
+                    select(func.count(JobFile.file_id))
+                    .join(ProcessingJob, JobFile.job_id == ProcessingJob.id)
+                    .where(
+                        *base_filter,
+                        JobFile.role == JobFileRole.INPUT
+                    )
+                )
+            ).scalar_one() or 0
+        )
+        total_bytes = int(
+            (
+                await s.execute(
+                    select(func.coalesce(func.sum(StoredFile.size_bytes), 0))
+                    .select_from(JobFile)
+                    .join(ProcessingJob, JobFile.job_id == ProcessingJob.id)
+                    .join(StoredFile, JobFile.file_id == StoredFile.id)
+                    .where(
+                        *base_filter,
+                        JobFile.role == JobFileRole.INPUT
+                    )
+                )
+            ).scalar_one() or 0
+        )
+
+        # 2. Tool breakdown
+        tool_counts_query = (
+            select(
+                ProcessingJob.tool,
+                func.count(ProcessingJob.id).label("total"),
+                func.count(func.nullif(ProcessingJob.status != JobStatus.COMPLETED, True)).label("success"),
+                func.count(func.nullif(ProcessingJob.status != JobStatus.FAILED, True)).label("failed")
+            )
+            .where(*base_filter)
+            .group_by(ProcessingJob.tool)
+        )
+        tool_counts_rows = (await s.execute(tool_counts_query)).all()
+        tool_counts = {
+            row[0]: {"total": int(row[1]), "success": int(row[2]), "failed": int(row[3])}
+            for row in tool_counts_rows
+        }
+
+        tool_files_query = (
+            select(
+                ProcessingJob.tool,
+                func.count(JobFile.file_id).label("files_cnt"),
+                func.coalesce(func.sum(StoredFile.size_bytes), 0).label("bytes_sum")
+            )
+            .select_from(JobFile)
+            .join(ProcessingJob, JobFile.job_id == ProcessingJob.id)
+            .join(StoredFile, JobFile.file_id == StoredFile.id)
+            .where(
+                *base_filter,
+                JobFile.role == JobFileRole.INPUT
+            )
+            .group_by(ProcessingJob.tool)
+        )
+        tool_files_rows = (await s.execute(tool_files_query)).all()
+        tool_files = {
+            row[0]: {"files": int(row[1]), "bytes": int(row[2])}
+            for row in tool_files_rows
+        }
+
+        tools = (
+            await self.session.execute(
+                select(ToolConfig).order_by(ToolConfig.sort_order, ToolConfig.name)
+            )
+        ).scalars().all()
+
+        tools_list = []
+        for t in tools:
+            counts = tool_counts.get(t.slug, {"total": 0, "success": 0, "failed": 0})
+            files_data = tool_files.get(t.slug, {"files": 0, "bytes": 0})
+            
+            usage_cnt = counts["total"]
+            success_cnt = counts["success"]
+            failure_cnt = counts["failed"]
+            success_rate = round(100.0 * success_cnt / usage_cnt, 1) if usage_cnt > 0 else 100.0
+
+            tools_list.append({
+                "slug": t.slug,
+                "name": t.name,
+                "category": t.category,
+                "usage_count": usage_cnt,
+                "success_count": success_cnt,
+                "failure_count": failure_cnt,
+                "success_rate": success_rate,
+                "files_processed": files_data["files"],
+                "data_processed_bytes": files_data["bytes"],
+            })
+
+        sorted_tools = sorted(tools_list, key=lambda x: x["usage_count"], reverse=True)
+        most_popular = sorted_tools[0]["name"] if sorted_tools and sorted_tools[0]["usage_count"] > 0 else "None"
+        
+        non_zero_tools = [x for x in sorted_tools if x["usage_count"] > 0]
+        if non_zero_tools:
+            least_used = non_zero_tools[-1]["name"]
+        else:
+            least_used = sorted_tools[-1]["name"] if sorted_tools else "None"
+
+        # 3. Trend
+        if group_by == "yearly":
+            date_trunc_field = func.date_trunc("year", ProcessingJob.created_at)
+        elif group_by == "monthly":
+            date_trunc_field = func.date_trunc("month", ProcessingJob.created_at)
+        elif group_by == "weekly":
+            date_trunc_field = func.date_trunc("week", ProcessingJob.created_at)
+        else: # daily
+            date_trunc_field = func.date_trunc("day", ProcessingJob.created_at)
+
+        trend_query = (
+            select(date_trunc_field.label("grp"), func.count(ProcessingJob.id).label("val"))
+            .where(*base_filter)
+            .group_by(date_trunc_field)
+            .order_by(date_trunc_field)
+        )
+        trend_rows = (await s.execute(trend_query)).all()
+
+        trend_points = []
+        for grp, val in trend_rows:
+            if not grp:
+                continue
+            if group_by == "yearly":
+                label = grp.strftime("%Y")
+            elif group_by == "monthly":
+                label = grp.strftime("%b %Y")
+            elif group_by == "weekly":
+                label = f"Wk {grp.isocalendar()[1]} ({grp.year})"
+            else: # daily
+                label = grp.strftime("%b %d")
+
+            trend_points.append({
+                "m": label,
+                "v": int(val or 0)
+            })
+
         return {
             "kpis": {
-                "total_conversions": total_conversions,
-                "unique_users": unique_users,
-                "completed": completed,
-                "success_rate": success_rate,
+                "total_executions": total_execs,
+                "success_executions": success_execs,
+                "failed_executions": failed_execs,
+                "total_files_processed": total_files,
+                "total_data_processed_bytes": total_bytes,
+                "most_popular_tool": most_popular,
+                "least_used_tool": least_used,
             },
-            "conversion_trend": await self._monthly_conversions(),
-            "top_tools": await self._tool_usage_counts(limit=6),
+            "tools_list": tools_list,
+            "trend": trend_points
         }
 
     async def _monthly_conversions(self) -> list[dict[str, Any]]:
